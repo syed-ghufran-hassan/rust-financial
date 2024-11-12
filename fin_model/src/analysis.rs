@@ -3,6 +3,7 @@ Provides structs and traits that represent common market analysis.
 */
 
 use std::collections::HashMap;
+use std::fmt;
 
 use crate::prelude::*;
 use crate::reporting::FinancialPeriod;
@@ -17,22 +18,10 @@ pub type Counter = u32;
 /// The type of an analyst recommendation/position.
 #[derive(PartialEq, Eq, Hash)]
 pub enum RatingType {
-    /// Also known as strong buy and _on the recommended list_. Needless to say,
-    /// buy is a recommendation to purchase a specific security.
     Buy,
-    /// Also known as _moderate buy_, _accumulate_, and _overweight_. Outperform
-    /// is an analyst recommendation meaning a stock is expected to do slightly
-    /// better than the market return.
     Outperform,
-    /// In general terms, a company with a hold recommendation is expected to
-    /// perform at the same pace as comparable companies or in-line with the market.
     Hold,
-    /// A recommendation that means a stock is expected to do slightly worse than
-    /// the overall stock market return. Underperform can also be expressed as
-    /// _moderate sell_, _weak hold_, and _underweight_.
     Underperform,
-    /// Also known as strong sell, it's a recommendation to sell a security or
-    /// to liquidate an asset.
     Sell,
 }
 
@@ -42,6 +31,35 @@ pub struct Ratings {
     pub ratings: HashMap<RatingType, Counter>,
     /// a standardized represention of the consensus of recommendations
     pub scale_mark: Option<f32>,
+}
+
+impl Ratings {
+    /// Calculate the scaled/weighted average of the current set of ratings.
+    /// Returns `None` if there are no ratings.
+    pub fn scaled_average(&self) -> Option<f64> {
+        if self.ratings.is_empty() {
+            // Handle empty ratings map case
+            return None;
+        }
+        
+        let (count, total) = self.ratings.iter().fold((0, 0), |(c, t), (k, v)| {
+            let weight = match *k {
+                RatingType::Buy => 1,
+                RatingType::Outperform => 2,
+                RatingType::Hold => 3,
+                RatingType::Underperform => 4,
+                RatingType::Sell => 5,
+            };
+            (c + *v, t + weight * *v)
+        });
+
+        if count == 0 {
+            // Handle zero-count case to avoid division by zero
+            None
+        } else {
+            Some(f64::from(total) / f64::from(count))
+        }
+    }
 }
 
 /// Consensus price targets; high, low, and average.
@@ -54,6 +72,22 @@ pub struct PriceTarget {
     pub average: Money,
     /// number of analysts that provided recommendations
     pub number_of_analysts: Counter,
+}
+
+impl PriceTarget {
+    /// Validate the integrity of the price target data.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.high < self.low {
+            return Err("High price target cannot be lower than low price target.".to_string());
+        }
+        if !(self.low..=self.high).contains(&self.average) {
+            return Err("Average price target must be within the high and low bounds.".to_string());
+        }
+        if self.number_of_analysts == 0 {
+            return Err("Number of analysts cannot be zero for a valid price target.".to_string());
+        }
+        Ok(())
+    }
 }
 
 /// Consensus Earnings per Share (EPS) targets for some fiscal period.
@@ -70,28 +104,22 @@ pub struct EPSConsensus {
     pub next_report_date: Date,
 }
 
+impl EPSConsensus {
+    /// Validates the EPS consensus data to check dates and estimates.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.fiscal_end_date > self.next_report_date {
+            return Err("Fiscal end date should be before the next report date.".to_string());
+        }
+        if self.number_of_estimates == 0 {
+            return Err("Number of estimates cannot be zero for a valid EPS consensus.".to_string());
+        }
+        Ok(())
+    }
+}
+
 // ------------------------------------------------------------------------------------------------
 // Public Traits
 // ------------------------------------------------------------------------------------------------
-
-impl Ratings {
-    /// Calculate the scaled/weighted average of the current set of ratings.
-    pub fn scaled_average(&self) -> f64 {
-        let (count, total) = self.ratings.iter().fold((0, 0), |(c, t), (k, v)| {
-            (
-                c + *v,
-                t + match *k {
-                    RatingType::Buy => 1,
-                    RatingType::Outperform => 2,
-                    RatingType::Hold => 3,
-                    RatingType::Underperform => 4,
-                    RatingType::Sell => 5,
-                } * *v,
-            )
-        });
-        f64::from(total) / f64::from(count)
-    }
-}
 
 /// This trait is implemented by providers to return a set of symbols that are expected
 /// to represent peer companies to `for_symbol`. This set of peers could be provided by
@@ -103,12 +131,15 @@ pub trait Peers {
 
 /// This trait is implemented by providers to return various analyst recommendations.
 pub trait AnalystRecommendations {
-    /// Return the target price recommendations for the symbol
-    fn target_price(&self, for_symbol: Symbol) -> RequestResult<Snapshot<PriceTarget>>;
+    /// Return the target price recommendations for the symbol.
+    /// Returns an error if no data is available for the symbol.
+    fn target_price(&self, for_symbol: Symbol) -> RequestResult<Option<Snapshot<PriceTarget>>>;
 
-    /// Return the consensus ratings for the symbol
-    fn consensus_rating(&self, for_symbol: Symbol) -> RequestResult<Vec<Bounded<Ratings>>>;
+    /// Return the consensus ratings for the symbol.
+    /// Returns an error if no ratings are available for the symbol.
+    fn consensus_rating(&self, for_symbol: Symbol) -> RequestResult<Option<Vec<Bounded<Ratings>>>>;
 
-    /// Return the consensus earnings per share (EPS) for the symbol
-    fn consensus_eps(&self, for_symbol: Symbol) -> RequestResult<Vec<EPSConsensus>>;
+    /// Return the consensus earnings per share (EPS) for the symbol.
+    /// Returns an error if no EPS data is available for the symbol.
+    fn consensus_eps(&self, for_symbol: Symbol) -> RequestResult<Option<Vec<EPSConsensus>>>;
 }
